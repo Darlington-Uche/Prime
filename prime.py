@@ -2,6 +2,7 @@ import requests
 import time
 import subprocess
 import random
+import json
 from datetime import datetime
 
 # ==================
@@ -13,23 +14,35 @@ TASK_ID_LIST = [
     "1755184676246",
     "1755184676247",
     "1755184676248"
-]  # Rotates between these IDs
+]
 
 ACCOUNTS = [
     {"email": "Kb1@gmail.com", "pwd": "e6b44d01d80833b117fc61d09457b689"},
-    # Add more accounts here if available
 ]
 
-CHECK_INTERVAL_RANGE = (45, 90)  # Wider range for more randomness
+CHECK_INTERVAL = 30  # Check every 30 seconds
+PROXY_ROTATION = 5   # Rotate proxy every 5 checks
 NOTIFY_TIMES = 5
 MAX_RETRIES = 3
-SESSION_DURATION = 10 * 60  # Rotate session every 30 minutes
-ERROR_NOTIFICATION_COOLDOWN = 300  # 5 minutes between error notifications
+ERROR_NOTIFICATION_COOLDOWN = 300
+
+# ==================
+# LOAD PROXIES
+# ==================
+try:
+    with open('proxies.json', 'r') as f:
+        PROXIES = json.load(f)['proxies']
+    log(f"Loaded {len(PROXIES)} proxies from proxies.json")
+except Exception as e:
+    log(f"Failed to load proxies: {e}", error=True)
+    PROXIES = []
 
 # ==================
 # GLOBALS
 # ==================
 last_error_notification = 0
+current_proxy_index = 0
+check_counter = 0
 
 # ==================
 # FUNCTIONS
@@ -63,7 +76,7 @@ def notify_error(error_msg):
         try:
             short_msg = f"Error: {error_msg[:50]}..." if len(error_msg) > 50 else f"Error: {error_msg}"
             subprocess.run(["termux-notification", "--title", "SCRIPT ERROR", "--content", short_msg])
-            subprocess.run(["termux-vibrate", "-d", "1000"])  # Longer vibration for errors
+            subprocess.run(["termux-vibrate", "-d", "1000"])
             subprocess.run(["termux-toast", short_msg])
             last_error_notification = current_time
         except Exception as e:
@@ -73,7 +86,7 @@ def send_notification(msg, is_error=False):
     try:
         if is_error:
             subprocess.run(["termux-notification", "--title", "SCRIPT ERROR", "--content", msg])
-            subprocess.run(["termux-vibrate", "-d", "1000", "-f"])  # Force vibration for errors
+            subprocess.run(["termux-vibrate", "-d", "1000", "-f"])
         else:
             subprocess.run(["termux-notification", "--title", "VIP1 Status", "--content", msg])
             subprocess.run(["termux-vibrate", "-d", "500"])
@@ -95,6 +108,26 @@ def get_enhanced_headers():
         "Cache-Control": "no-cache"
     }
 
+def get_current_proxy():
+    global current_proxy_index
+    if not PROXIES:
+        return None
+    
+    proxy = PROXIES[current_proxy_index]
+    log(f"Using proxy: {proxy.split('@')[-1]}")
+    return {
+        "http": proxy,
+        "https": proxy
+    }
+
+def rotate_proxy():
+    global current_proxy_index
+    if not PROXIES:
+        return
+    
+    current_proxy_index = (current_proxy_index + 1) % len(PROXIES)
+    log(f"Rotated to proxy: {PROXIES[current_proxy_index].split('@')[-1]}")
+
 def get_token(account):
     for attempt in range(MAX_RETRIES):
         try:
@@ -105,7 +138,7 @@ def get_token(account):
             
             with requests.Session() as session:
                 session.headers.update(headers)
-                res = session.post(LOGIN_URL, json=payload)
+                res = session.post(LOGIN_URL, json=payload, proxies=get_current_proxy())
                 
             log(f"Login attempt {attempt + 1} status: {res.status_code}")
             
@@ -131,21 +164,29 @@ def get_token(account):
                 wait_time = random.randint(5, 15)
                 log(f"Retrying in {wait_time} seconds...")
                 time.sleep(wait_time)
+                rotate_proxy()
     
     send_notification("⚠️ Failed to login after multiple attempts!", is_error=True)
     return None, None
 
 def check_vip1(session, token):
+    global check_counter
+    
     task_id = random.choice(TASK_ID_LIST)
     task_url = f"https://api.primevideo.pw/api/task/task_info?d={task_id}"
     
     try:
-        time.sleep(random.uniform(0.5, 2.5))
+        time.sleep(random.uniform(0.5, 1.5))
         
         headers = get_enhanced_headers()
         headers["Authorization"] = f"Bearer {token}"
         
-        res = session.get(task_url, headers=headers)
+        # Rotate proxy every 5 checks
+        check_counter += 1
+        if check_counter % PROXY_ROTATION == 0:
+            rotate_proxy()
+        
+        res = session.get(task_url, headers=headers, proxies=get_current_proxy())
         log(f"Checked Task {task_id} → Status: {res.status_code}")
         
         if res.status_code != 200:
@@ -173,8 +214,6 @@ def check_vip1(session, token):
         return 0
 
 def main_loop():
-    global last_error_notification
-    
     log("🚀 VIP1 Auto-Checker Started...")
     current_account = random.choice(ACCOUNTS)
     token, cookies = get_token(current_account)
@@ -188,28 +227,9 @@ def main_loop():
     if cookies:
         session.cookies.update(cookies)
     
-    last_session_rotation = time.time()
-    check_counter = 0
-    
     while True:
         try:
-            if time.time() - last_session_rotation > SESSION_DURATION:
-                log("🔄 Rotating session...")
-                current_account = random.choice(ACCOUNTS)
-                token, cookies = get_token(current_account)
-                if token:
-                    session = requests.Session()
-                    session.headers.update(get_enhanced_headers())
-                    if cookies:
-                        session.cookies.update(cookies)
-                    last_session_rotation = time.time()
-                else:
-                    log("⚠️ Failed to rotate session", error=True)
-                    time.sleep(60)
-                    continue
-            
             status = check_vip1(session, token)
-            check_counter += 1
             
             if status == 1:
                 log("✅ VIP1 is UNLOCKED!")
@@ -220,16 +240,8 @@ def main_loop():
             else:
                 log("❌ VIP1 still locked.")
             
-            base_delay = random.uniform(*CHECK_INTERVAL_RANGE)
-            jitter = random.uniform(-15, 15)
-            delay = max(30, base_delay + jitter)
-            log(f"⏳ Next check in {delay:.1f} seconds")
-            time.sleep(delay)
-            
-            if check_counter % random.randint(5, 10) == 0:
-                long_break = random.randint(120, 300)
-                log(f"💤 Taking a longer break of {long_break} seconds...")
-                time.sleep(long_break)
+            log(f"⏳ Next check in {CHECK_INTERVAL} seconds")
+            time.sleep(CHECK_INTERVAL)
                 
         except KeyboardInterrupt:
             log("🛑 Script stopped by user")
