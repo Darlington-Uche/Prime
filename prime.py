@@ -2,7 +2,6 @@ import requests
 import time
 import subprocess
 import random
-import json
 from datetime import datetime
 
 # ==================
@@ -20,8 +19,8 @@ ACCOUNTS = [
     {"email": "Kb1@gmail.com", "pwd": "e6b44d01d80833b117fc61d09457b689"},
 ]
 
-CHECK_INTERVAL = 30  # Check every 30 seconds
-PROXY_ROTATION = 5   # Rotate proxy every 5 checks
+CHECK_INTERVAL = 30  # Fixed 30 second checks
+LOGIN_REFRESH = 5    # Re-login after 5 checks
 NOTIFY_TIMES = 5
 MAX_RETRIES = 3
 ERROR_NOTIFICATION_COOLDOWN = 300
@@ -30,9 +29,7 @@ ERROR_NOTIFICATION_COOLDOWN = 300
 # GLOBALS
 # ==================
 last_error_notification = 0
-current_proxy_index = 0
 check_counter = 0
-PROXIES = []
 
 # ==================
 # FUNCTIONS
@@ -98,26 +95,6 @@ def get_enhanced_headers():
         "Cache-Control": "no-cache"
     }
 
-def get_current_proxy():
-    global current_proxy_index
-    if not PROXIES:
-        return None
-    
-    proxy = PROXIES[current_proxy_index]
-    log(f"Using proxy: {proxy.split('@')[-1]}")
-    return {
-        "http": proxy,
-        "https": proxy
-    }
-
-def rotate_proxy():
-    global current_proxy_index
-    if not PROXIES:
-        return
-    
-    current_proxy_index = (current_proxy_index + 1) % len(PROXIES)
-    log(f"Rotated to proxy: {PROXIES[current_proxy_index].split('@')[-1]}")
-
 def get_token(account):
     for attempt in range(MAX_RETRIES):
         try:
@@ -128,7 +105,7 @@ def get_token(account):
             
             with requests.Session() as session:
                 session.headers.update(headers)
-                res = session.post(LOGIN_URL, json=payload, proxies=get_current_proxy())
+                res = session.post(LOGIN_URL, json=payload)
                 
             log(f"Login attempt {attempt + 1} status: {res.status_code}")
             
@@ -154,14 +131,11 @@ def get_token(account):
                 wait_time = random.randint(5, 15)
                 log(f"Retrying in {wait_time} seconds...")
                 time.sleep(wait_time)
-                rotate_proxy()
     
     send_notification("⚠️ Failed to login after multiple attempts!", is_error=True)
     return None, None
 
 def check_vip1(session, token):
-    global check_counter
-    
     task_id = random.choice(TASK_ID_LIST)
     task_url = f"https://api.primevideo.pw/api/task/task_info?d={task_id}"
     
@@ -171,12 +145,7 @@ def check_vip1(session, token):
         headers = get_enhanced_headers()
         headers["Authorization"] = f"Bearer {token}"
         
-        # Rotate proxy every 5 checks
-        check_counter += 1
-        if check_counter % PROXY_ROTATION == 0:
-            rotate_proxy()
-        
-        res = session.get(task_url, headers=headers, proxies=get_current_proxy())
+        res = session.get(task_url, headers=headers)
         log(f"Checked Task {task_id} → Status: {res.status_code}")
         
         if res.status_code != 200:
@@ -203,18 +172,9 @@ def check_vip1(session, token):
         log(error_msg, error=True)
         return 0
 
-# ==================
-# LOAD PROXIES (MOVED AFTER FUNCTION DEFINITIONS)
-# ==================
-try:
-    with open('proxies.json', 'r') as f:
-        PROXIES = json.load(f)['proxies']
-    log(f"Loaded {len(PROXIES)} proxies from proxies.json")
-except Exception as e:
-    log(f"Failed to load proxies: {e}", error=True)
-    PROXIES = []
-
 def main_loop():
+    global check_counter
+    
     log("🚀 VIP1 Auto-Checker Started...")
     current_account = random.choice(ACCOUNTS)
     token, cookies = get_token(current_account)
@@ -230,6 +190,22 @@ def main_loop():
     
     while True:
         try:
+            # Refresh login every 5 checks
+            check_counter += 1
+            if check_counter % LOGIN_REFRESH == 0:
+                log("🔄 Refreshing login session...")
+                current_account = random.choice(ACCOUNTS)
+                token, cookies = get_token(current_account)
+                if token:
+                    session = requests.Session()
+                    session.headers.update(get_enhanced_headers())
+                    if cookies:
+                        session.cookies.update(cookies)
+                else:
+                    log("⚠️ Failed to refresh session", error=True)
+                    time.sleep(60)
+                    continue
+            
             status = check_vip1(session, token)
             
             if status == 1:
