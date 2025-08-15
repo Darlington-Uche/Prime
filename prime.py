@@ -27,22 +27,12 @@ MAX_RETRIES = 3
 ERROR_NOTIFICATION_COOLDOWN = 300
 
 # ==================
-# LOAD PROXIES
-# ==================
-try:
-    with open('proxies.json', 'r') as f:
-        PROXIES = json.load(f)['proxies']
-    log(f"Loaded {len(PROXIES)} proxies from proxies.json")
-except Exception as e:
-    log(f"Failed to load proxies: {e}", error=True)
-    PROXIES = []
-
-# ==================
 # GLOBALS
 # ==================
 last_error_notification = 0
 current_proxy_index = 0
 check_counter = 0
+PROXIES = []
 
 # ==================
 # FUNCTIONS
@@ -212,6 +202,17 @@ def check_vip1(session, token):
         error_msg = f"Error checking VIP1: {str(e)}"
         log(error_msg, error=True)
         return 0
+
+# ==================
+# LOAD PROXIES (MOVED AFTER FUNCTION DEFINITIONS)
+# ==================
+try:
+    with open('proxies.json', 'r') as f:
+        PROXIES = json.load(f)['proxies']
+    log(f"Loaded {len(PROXIES)} proxies from proxies.json")
+except Exception as e:
+    log(f"Failed to load proxies: {e}", error=True)
+    PROXIES = []
 
 def main_loop():
     log("🚀 VIP1 Auto-Checker Started...")
