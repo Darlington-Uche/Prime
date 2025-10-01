@@ -162,7 +162,7 @@ class SolanaFaucetBot {
             this.updateCooldown(userId);
 
             const explorerUrl = `https://explorer.solana.com/tx/${txSignature}?cluster=devnet`;
-            const successMessage = `✅ Sent 1 SOL to \`${address}\`\n[View TX](${explorerUrl})`;
+            const successMessage = `✅ Sent 5 SOL to \`${address}\`\n[View TX](${explorerUrl})`;
             
             await this.bot.editMessageText(successMessage, {
                 chat_id: chatId,
@@ -170,7 +170,7 @@ class SolanaFaucetBot {
                 parse_mode: 'Markdown'
             });
 
-            console.log(`✅ Sent 1 SOL to ${address} for ${username}`);
+            console.log(`✅ Sent 5 SOL to ${address} for ${username}`);
         } catch (error) {
             console.error(`Error for ${username}:`, error);
             await this.bot.sendMessage(chatId, `❌ Error: ${error.message}`);
