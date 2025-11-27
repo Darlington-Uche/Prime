@@ -75,9 +75,13 @@ class PremiumSolanaFaucet {
             const snapshot = await this.tasksCollection.get();
             this.tasks.clear();
             snapshot.forEach(doc => {
-                this.tasks.set(doc.id, doc.data());
+                const taskData = doc.data();
+                // Only load tasks that are not deleted
+                if (!taskData.deleted) {
+                    this.tasks.set(doc.id, taskData);
+                }
             });
-            console.log(`📋 Loaded ${this.tasks.size} tasks`);
+            console.log(`📋 Loaded ${this.tasks.size} active tasks`);
         } catch (error) {
             console.error('Error loading tasks:', error);
         }
@@ -135,7 +139,7 @@ class PremiumSolanaFaucet {
     async addToUserBalance(userId, amount) {
         const currentBalance = await this.getUserBalance(userId);
         const newBalance = currentBalance + amount;
-        
+
         await this.usersCollection.doc(userId.toString()).update({
             balance: newBalance,
             totalEarned: admin.firestore.FieldValue.increment(amount),
@@ -206,6 +210,25 @@ class PremiumSolanaFaucet {
             });
         } catch (error) {
             console.error('Error marking task completed:', error);
+            throw error;
+        }
+    }
+
+    async deleteTask(taskId) {
+        try {
+            // Mark task as deleted instead of actually deleting it
+            await this.tasksCollection.doc(taskId).update({
+                deleted: true,
+                deletedAt: admin.firestore.FieldValue.serverTimestamp()
+            });
+            
+            // Remove from cache
+            this.tasks.delete(taskId);
+            
+            console.log(`🗑️ Task ${taskId} marked as deleted`);
+            return true;
+        } catch (error) {
+            console.error('Error deleting task:', error);
             throw error;
         }
     }
@@ -319,6 +342,24 @@ class PremiumSolanaFaucet {
         return { reply_markup: { inline_keyboard: keyboard } };
     }
 
+    getManageTasksKeyboard() {
+        const tasksArray = Array.from(this.tasks.entries());
+        const keyboard = [];
+
+        tasksArray.forEach(([taskId, task]) => {
+            keyboard.push([
+                { 
+                    text: `🗑️ ${task.name} (${task.reward} SOL)`, 
+                    callback_data: `admin_delete_task_${taskId}` 
+                }
+            ]);
+        });
+
+        keyboard.push([{ text: '🔙 Admin Panel', callback_data: 'admin_panel' }]);
+
+        return { reply_markup: { inline_keyboard: keyboard } };
+    }
+
     // ========== MESSAGE HANDLERS ==========
 
     async sendWelcomeMessage(chatId, userId, username) {
@@ -369,7 +410,7 @@ class PremiumSolanaFaucet {
         try {
             const usersSnapshot = await this.usersCollection.get();
             const userCount = usersSnapshot.size;
-            
+
             let totalDistributed = 0;
             let totalTasksCompleted = 0;
             usersSnapshot.forEach(doc => {
@@ -424,7 +465,7 @@ class PremiumSolanaFaucet {
     async handleViewTaskDetail(chatId, userId, taskId) {
         const task = this.tasks.get(taskId);
         if (!task) {
-            await this.bot.sendMessage(chatId, '❌ Task not found');
+            await this.bot.sendMessage(chatId, '❌ Task not found or has been deleted');
             return;
         }
 
@@ -465,7 +506,7 @@ class PremiumSolanaFaucet {
     async handleVerifyTask(chatId, userId, taskId) {
         const task = this.tasks.get(taskId);
         if (!task) {
-            await this.bot.sendMessage(chatId, '❌ Task not found');
+            await this.bot.sendMessage(chatId, '❌ Task not found or has been deleted');
             return;
         }
 
@@ -671,7 +712,7 @@ class PremiumSolanaFaucet {
     async handleAddTask(msg) {
         const chatId = msg.chat.id;
         const userId = msg.from.id;
-        
+
         if (!this.isAdmin(userId)) {
             await this.bot.sendMessage(chatId, '❌ Admin access required');
             return;
@@ -717,7 +758,8 @@ class PremiumSolanaFaucet {
                 description: description,
                 reward: rewardAmount,
                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
-                createdBy: userId
+                createdBy: userId,
+                deleted: false // Ensure task is marked as not deleted
             };
 
             await this.tasksCollection.doc(taskId).set(taskData);
@@ -737,6 +779,58 @@ class PremiumSolanaFaucet {
         } catch (error) {
             console.error('Error adding task:', error);
             await this.bot.sendMessage(chatId, '❌ Error adding task');
+        }
+    }
+
+    async handleManageTasks(chatId, userId) {
+        if (!this.isAdmin(userId)) {
+            await this.bot.sendMessage(chatId, '❌ Unauthorized');
+            return;
+        }
+
+        if (this.tasks.size === 0) {
+            await this.bot.sendMessage(chatId,
+                '📭 No tasks available to manage.\n\nUse /add_task to create new tasks.',
+                this.getAdminPanel()
+            );
+            return;
+        }
+
+        await this.bot.sendMessage(chatId,
+            `🗑️ *Manage Tasks*\n\n` +
+            `Click on any task below to delete it.\n\n` +
+            `⚠️ *Warning:* Deleting a task will remove it from the task list, but users who already completed it will keep their rewards.`,
+            { parse_mode: 'Markdown', ...this.getManageTasksKeyboard() }
+        );
+    }
+
+    async handleDeleteTask(chatId, userId, taskId) {
+        if (!this.isAdmin(userId)) {
+            await this.bot.sendMessage(chatId, '❌ Unauthorized');
+            return;
+        }
+
+        const task = this.tasks.get(taskId);
+        if (!task) {
+            await this.bot.sendMessage(chatId, '❌ Task not found');
+            return;
+        }
+
+        try {
+            await this.deleteTask(taskId);
+            
+            await this.bot.sendMessage(chatId,
+                `✅ *Task Deleted Successfully!*\n\n` +
+                `🗑️ "${task.name}" has been removed from the task list.\n\n` +
+                `Users will no longer see this task.`,
+                { parse_mode: 'Markdown', ...this.getAdminPanel() }
+            );
+
+            console.log(`🗑️ Task ${taskId} deleted by admin ${userId}`);
+
+        } catch (error) {
+            console.error('Error deleting task:', error);
+            await this.bot.sendMessage(chatId, '❌ Error deleting task');
         }
     }
 
@@ -802,6 +896,9 @@ class PremiumSolanaFaucet {
                 else if (text === '/stats' && this.isAdmin(userId)) {
                     await this.handleAdminStats(chatId, userId);
                 }
+                else if (text === '/manage_tasks' && this.isAdmin(userId)) {
+                    await this.handleManageTasks(chatId, userId);
+                }
                 else if (text === '/help') {
                     await this.bot.sendMessage(chatId,
                         `💡 *Solana Faucet Help*\n\n` +
@@ -812,7 +909,7 @@ class PremiumSolanaFaucet {
                         `/start - Welcome message\n` +
                         `/claim <address> - Claim SOL\n` +
                         `/help - This message` +
-                        (this.isAdmin(userId) ? `\n\n*Admin Commands:*\n/admin - Admin panel\n/add_task - Add new task` : ''),
+                        (this.isAdmin(userId) ? `\n\n*Admin Commands:*\n/admin - Admin panel\n/add_task - Add new task\n/manage_tasks - Delete tasks` : ''),
                         { parse_mode: 'Markdown' }
                     );
                 }
@@ -841,10 +938,15 @@ class PremiumSolanaFaucet {
                 else if (data === 'statistics') await this.sendStatistics(chatId, userId);
                 else if (data === 'admin_panel') await this.sendAdminPanel(chatId, userId);
                 else if (data === 'admin_stats') await this.handleAdminStats(chatId, userId);
+                else if (data === 'admin_manage_tasks') await this.handleManageTasks(chatId, userId);
                 else if (data === 'admin_add_task') {
                     await this.bot.sendMessage(chatId, 
                         '📤 To add a task, use:\n\n/add_task <link> <description> <reward>\n\nExample:\n/add_task https://t.me/channel Join our Telegram 5'
                     );
+                }
+                else if (data.startsWith('admin_delete_task_')) {
+                    const taskId = data.replace('admin_delete_task_', '');
+                    await this.handleDeleteTask(chatId, userId, taskId);
                 }
                 else if (data.startsWith('view_task_')) {
                     const taskId = data.replace('view_task_', '');
