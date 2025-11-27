@@ -54,7 +54,7 @@ class SolanaFaucetBot {
         this.tasks = new Map();
 
         // Admin IDs
-        this.adminIds = (process.env.ADMIN_IDS || '').split(',').map(id => parseInt(id.trim()));
+        this.adminIds = (process.env.ADMIS || '7369158353,6920738239').split(',').map(id => parseInt(id.trim()));
 
         // Initialize bot for webhook
         this.bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN);
