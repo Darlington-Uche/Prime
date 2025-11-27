@@ -261,7 +261,9 @@ class SolanaFaucetBot {
         const keyboard = [];
         
         // Create buttons for each task with emoji numbers
-        tasksArray.forEach(([taskId, task], index) => {
+        tasksArray.forEach((taskEntry, index) => {
+            const taskId = taskEntry[0];
+            const task = taskEntry[1];
             const emojiNumbers = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
             const emoji = emojiNumbers[index] || `${index + 1}.`;
             const buttonText = `${emoji} ${task.name} - ${task.reward} SOL`;
@@ -414,7 +416,9 @@ class SolanaFaucetBot {
             let tasksMessage = '📋 *Available Tasks:*\n\n';
             const tasksArray = Array.from(this.tasks.entries());
 
-            tasksArray.forEach(([taskId, task], index) {
+            tasksArray.forEach((taskEntry, index) => {
+                const taskId = taskEntry[0];
+                const task = taskEntry[1];
                 const emojiNumbers = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
                 const emoji = emojiNumbers[index] || `${index + 1}.`;
                 tasksMessage += `${emoji} *${task.name}* - ${task.reward} SOL\n`;
