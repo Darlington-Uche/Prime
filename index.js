@@ -1,4 +1,3 @@
-
 const TelegramBot = require('node-telegram-bot-api');
 const { Connection, Keypair, Transaction, SystemProgram, LAMPORTS_PER_SOL, PublicKey, sendAndConfirmTransaction } = require('@solana/web3.js');
 const bs58 = require('bs58');
@@ -92,7 +91,7 @@ class PremiumSolanaFaucet {
         try {
             const userRef = this.usersCollection.doc(userId.toString());
             const userDoc = await userRef.get();
-            
+
             const username = msgFrom?.username || null;
             const firstName = msgFrom?.first_name || 'User';
 
@@ -100,14 +99,14 @@ class PremiumSolanaFaucet {
                 const userData = userDoc.data();
                 this.userBalances.set(userId, userData.balance || 0);
                 this.userCooldowns.set(userId, userData.lastClaim || 0);
-                
+
                 // Update username/name if available or changed
                 await userRef.update({
                     username: username,
                     firstName: firstName,
                     updatedAt: admin.firestore.FieldValue.serverTimestamp()
                 });
-                
+
                 return { ...userData, username: username, firstName: firstName };
             } else {
                 const newUser = {
@@ -177,6 +176,15 @@ class PremiumSolanaFaucet {
             updatedAt: admin.firestore.FieldValue.serverTimestamp()
         });
         this.userBalances.set(userId, 0);
+    }
+    
+    // NEW: Method to set user balance to a specific amount
+    async setUserBalance(userId, amount) {
+        await this.usersCollection.doc(userId.toString()).update({
+            balance: amount,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+        this.userBalances.set(userId, amount);
     }
 
     async isInCooldown(userId) {
@@ -334,11 +342,12 @@ class PremiumSolanaFaucet {
                         { text: '📋 Manage Tasks', callback_data: 'admin_manage_tasks' }
                     ],
                     [
-                        { text: '📣 Broadcast Message', callback_data: 'admin_broadcast' }, // NEW
+                        { text: '📣 Broadcast Message', callback_data: 'admin_broadcast' },
                         { text: '📊 System Stats', callback_data: 'admin_stats' }
                     ],
                     [
-                        { text: '👥 User Management (WIP)', callback_data: 'admin_users' } // Placeholder
+                         // NEW: Admin button for resetting balances
+                        { text: '🔄 Reset All Balances', callback_data: 'admin_reset_all' }
                     ],
                     [
                         { text: '🔙 Main Menu', callback_data: 'back_to_main' }
@@ -499,9 +508,9 @@ class PremiumSolanaFaucet {
             `📋 *Task Details*\n\n` +
             `✨ *${task.name}*\n\n` +
             `💰 Reward: *${task.reward} SOL*\n` +
-            `📊 Status: *${status}*\n\n` +
-            `🔗 ${task.link}\n\n` +
-            `📝 *Description:*\n${task.description}\n\n` +
+            `📊 Status: *${status}*` +
+            (task.link ? `\n\n🔗 ${task.link}` : '') +
+            `\n\n📝 *Description:*\n${task.description}\n\n` +
             (hasCompleted
                 ? `You've already completed this task! 🎉`
                 : `Click the button below to verify and earn ${task.reward} SOL!`);
@@ -533,10 +542,37 @@ class PremiumSolanaFaucet {
             return;
         }
 
+        // --- NEW: Multi-Click Protection / Theft Detection ---
         if (await this.hasCompletedTask(userId, taskId)) {
-            await this.bot.sendMessage(chatId, '✅ You have already completed this task!');
-            return;
+            const currentBalance = await this.getUserBalance(userId);
+            
+            // Check if the user is trying to click the button again
+            const lastTaskCompletedDoc = await this.userTasksCollection.doc(`${userId}_${taskId}`).get();
+            const completedAt = lastTaskCompletedDoc.data()?.completedAt?.toDate()?.getTime() || 0;
+            const timeSinceCompletion = Date.now() - completedAt;
+
+            // If the user has already completed the task AND it was completed very recently 
+            // (e.g., within 10 seconds of the last legitimate completion), 
+            // treat it as multi-clicking/cheating.
+            if (timeSinceCompletion < 10000) { 
+                await this.resetUserBalance(userId);
+                
+                // Send the 'thief' message and stop processing
+                await this.bot.sendMessage(chatId, 
+                    `Guy you be thief 🤣 Gba jor balance don enter 0 criminal`,
+                    this.getMainMenu(userId)
+                );
+
+                console.log(`🚨 CHEATING DETECTED: User ${userId} multi-clicked verify and had balance ${currentBalance.toFixed(2)} reset to 0.`);
+                return; 
+            } else {
+                // If it was already completed but not a rapid multi-click, just notify
+                await this.bot.sendMessage(chatId, '✅ You have already completed this task!');
+                return;
+            }
         }
+        // --- END NEW: Multi-Click Protection / Theft Detection ---
+
 
         // Show verification progress  
         const progressMessage = await this.bot.sendMessage(chatId,
@@ -917,7 +953,7 @@ class PremiumSolanaFaucet {
 
         const text = msg.text.trim();
         const messageParts = text.split(' ');
-        
+
         if (messageParts.length < 2) {
             await this.bot.sendMessage(chatId,
                 `📣 *Broadcast Message*\n\n` +
@@ -979,6 +1015,68 @@ class PremiumSolanaFaucet {
         }
     }
 
+    // NEW: Handler for /admin_reset_all_balances
+    async handleAdminResetAllBalances(msg) {
+        const chatId = msg.chat.id;
+        const userId = msg.from.id;
+
+        if (!this.isAdmin(userId)) return;
+
+        const text = msg.text.trim();
+        const parts = text.split(' ');
+
+        if (parts.length !== 2) {
+            await this.bot.sendMessage(chatId,
+                `🔄 *Reset All Balances*\n\n` +
+                `Format: /admin_reset_all_balances <amount>\n\n` +
+                `Example: /admin_reset_all_balances 10.5\n` +
+                `Example: /admin_reset_all_balances 0`,
+                { parse_mode: 'Markdown' }
+            );
+            return;
+        }
+
+        const amount = parseFloat(parts[1]);
+
+        if (isNaN(amount) || amount < 0) {
+            await this.bot.sendMessage(chatId, '❌ Amount must be a non-negative number.');
+            return;
+        }
+
+        try {
+            const usersSnapshot = await this.usersCollection.get();
+            const batch = db.batch();
+            let count = 0;
+
+            for (const doc of usersSnapshot.docs) {
+                const targetId = parseInt(doc.id, 10);
+                if (isNaN(targetId)) continue;
+
+                const userRef = this.usersCollection.doc(doc.id);
+                batch.update(userRef, {
+                    balance: amount,
+                    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                });
+                this.userBalances.set(targetId, amount); // Update cache
+                count++;
+            }
+
+            await batch.commit();
+
+            await this.bot.sendMessage(chatId,
+                `✅ *Balances Reset Complete!*\n\n` +
+                `📦 Total ${count} user balances set to *${amount.toFixed(2)} SOL*.`,
+                { parse_mode: 'Markdown' }
+            );
+
+            console.log(`✅ Admin ${userId} reset ${count} user balances to ${amount.toFixed(2)} SOL.`);
+
+        } catch (error) {
+            console.error('Error resetting all balances:', error);
+            await this.bot.sendMessage(chatId, '❌ A critical error occurred while resetting balances.');
+        }
+    }
+
 
     // ========== BOT INITIALIZATION ==========  
 
@@ -1002,8 +1100,12 @@ class PremiumSolanaFaucet {
                 else if (text.startsWith('/add_task') && this.isAdmin(userId)) {
                     await this.handleAddTask(msg);
                 }
-                else if (text.startsWith('/broadcast') && this.isAdmin(userId)) { // NEW
+                else if (text.startsWith('/broadcast') && this.isAdmin(userId)) {
                     await this.handleBroadcastMessage(msg);
+                }
+                // NEW: Admin command handler
+                else if (text.startsWith('/admin_reset_all_balances') && this.isAdmin(userId)) {
+                    await this.handleAdminResetAllBalances(msg);
                 }
                 else if (text === '/admin' && this.isAdmin(userId)) {
                     await this.sendAdminPanel(chatId, userId);
@@ -1024,7 +1126,7 @@ class PremiumSolanaFaucet {
                         `/start - Welcome message\n` +
                         `/claim <address> - Claim SOL\n` +
                         `/help - This message` +
-                        (this.isAdmin(userId) ? `\n\n*Admin Commands:*\n/admin - Admin panel\n/add_task - Add new task\n/broadcast - Send message to all users\n/manage_tasks - Delete tasks` : ''),
+                        (this.isAdmin(userId) ? `\n\n*Admin Commands:*\n/admin - Admin panel\n/add_task - Add new task\n/broadcast - Send message to all users\n/manage_tasks - Delete tasks\n/admin_reset_all_balances - Reset all balances` : ''),
                         { parse_mode: 'Markdown' }
                     );
                 }
@@ -1059,9 +1161,19 @@ class PremiumSolanaFaucet {
                         '📤 To add a task, use:\n\n/add_task <link> <description> <reward>\n\nExample:\n/add_task https://t.me/channel Join our Telegram 5'
                     );
                 }
-                else if (data === 'admin_broadcast') { // NEW
+                else if (data === 'admin_broadcast') {
                     await this.bot.sendMessage(chatId,
                         '📣 To send a broadcast, use:\n\n/broadcast <Your message here>\n\nExample:\n/broadcast New tasks are available! Go check them out now. 🚀'
+                    );
+                }
+                // NEW: Admin action for resetting balances
+                 else if (data === 'admin_reset_all') { 
+                    await this.bot.sendMessage(chatId,
+                        '🔄 *Reset All Balances*\n\n' +
+                        '⚠️ This will set the balance of *all users* to a specified amount.\n\n' +
+                        'Use the command format:\n/admin_reset_all_balances <amount>\n\n' +
+                        'Example: /admin_reset_all_balances 0',
+                        { parse_mode: 'Markdown' }
                     );
                 }
                 else if (data === 'admin_users') { // Placeholder
@@ -1123,4 +1235,3 @@ app.listen(PORT, () => {
 });
 
 module.exports = db;
-
