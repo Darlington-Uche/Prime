@@ -1,3 +1,4 @@
+
 const TelegramBot = require('node-telegram-bot-api');
 const { Connection, Keypair, Transaction, SystemProgram, LAMPORTS_PER_SOL, PublicKey, sendAndConfirmTransaction } = require('@solana/web3.js');
 const bs58 = require('bs58');
@@ -7,21 +8,21 @@ require('dotenv').config();
 
 // Firebase initialization
 const serviceAccount = {
-  type: process.env.FIREBASE_TYPE,
-  project_id: process.env.FIREBASE_PROJECT_ID,
-  private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
-  private_key: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-  client_email: process.env.FIREBASE_CLIENT_EMAIL,
-  client_id: process.env.FIREBASE_CLIENT_ID,
-  auth_uri: process.env.FIREBASE_AUTH_URI,
-  token_uri: process.env.FIREBASE_TOKEN_URI,
-  auth_provider_x509_cert_url: process.env.FIREBASE_AUTH_PROVIDER_CERT_URL,
-  client_x509_cert_url: process.env.FIREBASE_CLIENT_CERT_URL,
-  universe_domain: process.env.FIREBASE_UNIVERSE_DOMAIN
+    type: process.env.FIREBASE_TYPE,
+    project_id: process.env.FIREBASE_PROJECT_ID,
+    private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
+    private_key: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+    client_email: process.env.FIREBASE_CLIENT_EMAIL,
+    client_id: process.env.FIREBASE_CLIENT_ID,
+    auth_uri: process.env.FIREBASE_AUTH_URI,
+    token_uri: process.env.FIREBASE_TOKEN_URI,
+    auth_provider_x509_cert_url: process.env.FIREBASE_AUTH_PROVIDER_CERT_URL,
+    client_x509_cert_url: process.env.FIREBASE_CLIENT_CERT_URL,
+    universe_domain: process.env.FIREBASE_UNIVERSE_DOMAIN
 };
 
 admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
+    credential: admin.credential.cert(serviceAccount)
 });
 
 const db = admin.firestore();
@@ -34,29 +35,29 @@ class PremiumSolanaFaucet {
         // Initialize Solana connection
         this.connection = new Connection(process.env.SOLANA_RPC_URL || 'https://api.devnet.solana.com', 'confirmed');
 
-        // Initialize faucet wallet
+        // Initialize faucet wallet  
         const privateKeyBytes = Buffer.from(bs58.decode(process.env.FAUCET_PRIVATE_KEY));
         this.faucetKeypair = Keypair.fromSecretKey(privateKeyBytes);
 
-        // Configuration
+        // Configuration  
         this.dripAmount = parseInt(process.env.DRIP_AMOUNT) || 1000000000;
         this.cooldownHours = parseInt(process.env.COOLDOWN_HOURS) || 1;
         this.cooldownMs = this.cooldownHours * 60 * 60 * 1000;
 
-        // Collections
+        // Collections  
         this.usersCollection = db.collection('users');
         this.tasksCollection = db.collection('tasks');
         this.userTasksCollection = db.collection('userTasks');
 
-        // Cache
+        // Cache  
         this.userBalances = new Map();
         this.userCooldowns = new Map();
         this.tasks = new Map();
 
-        // Permanent Admin IDs
-        this.adminIds = [7369158353, 6920738239];
+        // Permanent Admin IDs (Use numbers) 
+        this.adminIds = [7369158353, 6920738239]; // Ensure these are actual numeric IDs
 
-        // Initialize bot
+        // Initialize bot  
         this.bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN);
         this.bot.setWebHook(`${process.env.RENDER_URL}/bot${process.env.TELEGRAM_BOT_TOKEN}`);
 
@@ -68,7 +69,7 @@ class PremiumSolanaFaucet {
         this.checkFaucetBalance();
     }
 
-    // ========== CORE METHODS ==========
+    // ========== CORE METHODS ==========  
 
     async loadTasks() {
         try {
@@ -76,7 +77,7 @@ class PremiumSolanaFaucet {
             this.tasks.clear();
             snapshot.forEach(doc => {
                 const taskData = doc.data();
-                // Only load tasks that are not deleted
+                // Only load tasks that are not deleted  
                 if (!taskData.deleted) {
                     this.tasks.set(doc.id, taskData);
                 }
@@ -87,24 +88,39 @@ class PremiumSolanaFaucet {
         }
     }
 
-    async loadUserData(userId) {
+    async loadUserData(userId, msgFrom) {
         try {
-            const userDoc = await this.usersCollection.doc(userId.toString()).get();
+            const userRef = this.usersCollection.doc(userId.toString());
+            const userDoc = await userRef.get();
+            
+            const username = msgFrom?.username || null;
+            const firstName = msgFrom?.first_name || 'User';
+
             if (userDoc.exists) {
                 const userData = userDoc.data();
                 this.userBalances.set(userId, userData.balance || 0);
                 this.userCooldowns.set(userId, userData.lastClaim || 0);
-                return userData;
+                
+                // Update username/name if available or changed
+                await userRef.update({
+                    username: username,
+                    firstName: firstName,
+                    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                });
+                
+                return { ...userData, username: username, firstName: firstName };
             } else {
                 const newUser = {
                     userId: userId,
+                    username: username,
+                    firstName: firstName,
                     balance: 0,
                     lastClaim: 0,
                     totalEarned: 0,
                     tasksCompleted: 0,
                     createdAt: admin.firestore.FieldValue.serverTimestamp()
                 };
-                await this.usersCollection.doc(userId.toString()).set(newUser);
+                await userRef.set(newUser);
                 this.userBalances.set(userId, 0);
                 this.userCooldowns.set(userId, 0);
                 return newUser;
@@ -127,7 +143,12 @@ class PremiumSolanaFaucet {
         }
     }
 
-    // ========== USER MANAGEMENT ==========
+    // ========== USER MANAGEMENT ==========  
+
+    async getUserData(userId) {
+        const userDoc = await this.usersCollection.doc(userId.toString()).get();
+        return userDoc.exists ? userDoc.data() : null;
+    }
 
     async getUserBalance(userId) {
         if (!this.userBalances.has(userId)) {
@@ -183,7 +204,7 @@ class PremiumSolanaFaucet {
         this.userCooldowns.set(userId, Date.now());
     }
 
-    // ========== TASK MANAGEMENT ==========
+    // ========== TASK MANAGEMENT ==========  
 
     async hasCompletedTask(userId, taskId) {
         try {
@@ -203,7 +224,7 @@ class PremiumSolanaFaucet {
                 completedAt: admin.firestore.FieldValue.serverTimestamp()
             });
 
-            // Update user stats
+            // Update user stats  
             await this.usersCollection.doc(userId.toString()).update({
                 tasksCompleted: admin.firestore.FieldValue.increment(1),
                 updatedAt: admin.firestore.FieldValue.serverTimestamp()
@@ -216,15 +237,15 @@ class PremiumSolanaFaucet {
 
     async deleteTask(taskId) {
         try {
-            // Mark task as deleted instead of actually deleting it
+            // Mark task as deleted instead of actually deleting it  
             await this.tasksCollection.doc(taskId).update({
                 deleted: true,
                 deletedAt: admin.firestore.FieldValue.serverTimestamp()
             });
-            
-            // Remove from cache
+
+            // Remove from cache  
             this.tasks.delete(taskId);
-            
+
             console.log(`🗑️ Task ${taskId} marked as deleted`);
             return true;
         } catch (error) {
@@ -233,7 +254,7 @@ class PremiumSolanaFaucet {
         }
     }
 
-    // ========== SOLANA OPERATIONS ==========
+    // ========== SOLANA OPERATIONS ==========  
 
     async sendSol(toAddress, amountLamports) {
         try {
@@ -272,7 +293,7 @@ class PremiumSolanaFaucet {
         }
     }
 
-    // ========== BOT UI COMPONENTS ==========
+    // ========== BOT UI COMPONENTS ==========  
 
     isAdmin(userId) {
         return this.adminIds.includes(userId);
@@ -313,8 +334,11 @@ class PremiumSolanaFaucet {
                         { text: '📋 Manage Tasks', callback_data: 'admin_manage_tasks' }
                     ],
                     [
-                        { text: '📊 System Stats', callback_data: 'admin_stats' },
-                        { text: '👥 User Management', callback_data: 'admin_users' }
+                        { text: '📣 Broadcast Message', callback_data: 'admin_broadcast' }, // NEW
+                        { text: '📊 System Stats', callback_data: 'admin_stats' }
+                    ],
+                    [
+                        { text: '👥 User Management (WIP)', callback_data: 'admin_users' } // Placeholder
                     ],
                     [
                         { text: '🔙 Main Menu', callback_data: 'back_to_main' }
@@ -331,9 +355,9 @@ class PremiumSolanaFaucet {
         tasksArray.forEach(([taskId, task], index) => {
             const emojiNumbers = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
             const emoji = emojiNumbers[index] || `${index + 1}.`;
-            keyboard.push([{ 
-                text: `${emoji} ${task.name} - ${task.reward} SOL`, 
-                callback_data: `view_task_${taskId}` 
+            keyboard.push([{
+                text: `${emoji} ${task.name} - ${task.reward} SOL`,
+                callback_data: `view_task_${taskId}`
             }]);
         });
 
@@ -348,9 +372,9 @@ class PremiumSolanaFaucet {
 
         tasksArray.forEach(([taskId, task]) => {
             keyboard.push([
-                { 
-                    text: `🗑️ ${task.name} (${task.reward} SOL)`, 
-                    callback_data: `admin_delete_task_${taskId}` 
+                {
+                    text: `🗑️ ${task.name} (${task.reward} SOL)`,
+                    callback_data: `admin_delete_task_${taskId}`
                 }
             ]);
         });
@@ -360,14 +384,14 @@ class PremiumSolanaFaucet {
         return { reply_markup: { inline_keyboard: keyboard } };
     }
 
-    // ========== MESSAGE HANDLERS ==========
+    // ========== MESSAGE HANDLERS ==========  
 
     async sendWelcomeMessage(chatId, userId, username) {
         const faucetBalance = await this.checkFaucetBalance();
         const userBalance = await this.getUserBalance(userId);
         const isAdmin = this.isAdmin(userId);
 
-        const welcomeMessage = 
+        const welcomeMessage =
             `✨ *Welcome to Solana Faucet, ${username}!* ✨\n\n` +
             `💎 *Your Balance:* ${userBalance.toFixed(2)} SOL\n` +
             `🏦 *Faucet Balance:* ${faucetBalance.toFixed(2)} SOL\n` +
@@ -383,8 +407,7 @@ class PremiumSolanaFaucet {
 
     async sendUserProfile(chatId, userId) {
         try {
-            const userDoc = await this.usersCollection.doc(userId.toString()).get();
-            const userData = userDoc.exists ? userDoc.data() : {};
+            const userData = await this.getUserData(userId) || {};
             const balance = await this.getUserBalance(userId);
             const cooldown = await this.getCooldownRemaining(userId);
 
@@ -439,18 +462,18 @@ class PremiumSolanaFaucet {
         }
     }
 
-    // ========== TASK FLOW ==========
+    // ========== TASK FLOW ==========  
 
     async handleViewTasks(chatId, userId) {
         if (this.tasks.size === 0) {
-            await this.bot.sendMessage(chatId, 
+            await this.bot.sendMessage(chatId,
                 '📭 No tasks available at the moment.\n\nCheck back later for new earning opportunities! 💫',
                 this.getMainMenu(userId)
             );
             return;
         }
 
-        const tasksMessage = 
+        const tasksMessage =
             `🎯 *Available Tasks*\n\n` +
             `Complete tasks to earn SOL! Click on any task below to view details and start earning. 💰\n\n` +
             `*Total Tasks:* ${this.tasks.size}\n` +
@@ -479,7 +502,7 @@ class PremiumSolanaFaucet {
             `📊 Status: *${status}*\n\n` +
             `🔗 ${task.link}\n\n` +
             `📝 *Description:*\n${task.description}\n\n` +
-            (hasCompleted 
+            (hasCompleted
                 ? `You've already completed this task! 🎉`
                 : `Click the button below to verify and earn ${task.reward} SOL!`);
 
@@ -503,7 +526,7 @@ class PremiumSolanaFaucet {
         });
     }
 
-    async handleVerifyTask(chatId, userId, taskId) {
+    async handleVerifyTask(chatId, userId, taskId, msgFrom) {
         const task = this.tasks.get(taskId);
         if (!task) {
             await this.bot.sendMessage(chatId, '❌ Task not found or has been deleted');
@@ -515,22 +538,39 @@ class PremiumSolanaFaucet {
             return;
         }
 
-        // Show verification progress
+        // Show verification progress  
         const progressMessage = await this.bot.sendMessage(chatId,
             `⏳ Verifying your task completion...\n\n` +
             `Please wait while we verify that you've completed:\n"*${task.name}*"\n\n` +
             `This usually takes 5-10 seconds... ⏰`
         );
 
-        // Simulate verification process
+        // Simulate verification process  
         await new Promise(resolve => setTimeout(resolve, 7000));
 
         try {
-            // Mark as completed and reward user
+            // Mark as completed and reward user  
             await this.markTaskCompleted(userId, taskId);
             const newBalance = await this.addToUserBalance(userId, task.reward);
 
-            // Update progress message
+            // Notify Admins about the completion
+            const userName = msgFrom.username ? `@${msgFrom.username}` : msgFrom.first_name || `User_${userId}`;
+            const adminNotification = 
+                `🔔 *Task Completed Notification*\n\n` +
+                `👤 *User:* ${userName} (ID: ${userId})\n` +
+                `✅ *Task:* ${task.name}\n` +
+                `💰 *Reward:* ${task.reward} SOL`;
+
+            for (const adminId of this.adminIds) {
+                // Ensure we don't notify the user who is also an admin
+                if (adminId.toString() !== userId.toString()) {
+                    await this.bot.sendMessage(adminId, adminNotification, { parse_mode: 'Markdown' });
+                }
+            }
+            // --- END Admin Notification ---
+
+
+            // Update progress message  
             const successMessage =
                 `🎉 *Task Verified Successfully!*\n\n` +
                 `✅ Completed: *${task.name}*\n` +
@@ -556,9 +596,9 @@ class PremiumSolanaFaucet {
         }
     }
 
-    // ========== CLAIM FLOW ==========
+    // ========== CLAIM FLOW ==========  
 
-    async handleClaimRequest(chatId, userId, username) {
+    async handleClaimRequest(chatId, userId) {
         const userBalance = await this.getUserBalance(userId);
 
         if (userBalance <= 0) {
@@ -597,11 +637,11 @@ class PremiumSolanaFaucet {
         const chatId = msg.chat.id;
         const userId = msg.from.id;
         const text = msg.text;
-        const username = msg.from.username || `user_${userId}`;
+        const username = msg.from.username || msg.from.first_name || `user_${userId}`;
 
         const address = text.split(' ')[1];
         if (!address) {
-            await this.bot.sendMessage(chatId, 
+            await this.bot.sendMessage(chatId,
                 '❌ Please provide your Solana wallet address:\n\n/claim <your_wallet_address>'
             );
             return;
@@ -620,7 +660,7 @@ class PremiumSolanaFaucet {
         }
 
         if (!this.isValidSolanaAddress(address)) {
-            await this.bot.sendMessage(chatId, 
+            await this.bot.sendMessage(chatId,
                 '❌ Invalid Solana address!\n\n' +
                 'Please make sure you entered a valid Solana wallet address.'
             );
@@ -632,7 +672,7 @@ class PremiumSolanaFaucet {
             const claimAmount = userBalance;
 
             if (faucetBalance < claimAmount) {
-                await this.bot.sendMessage(chatId, 
+                await this.bot.sendMessage(chatId,
                     `❌ Faucet low on funds!\n\n` +
                     `Current balance: ${faucetBalance.toFixed(2)} SOL\n` +
                     `Required: ${claimAmount.toFixed(2)} SOL\n\n` +
@@ -648,11 +688,11 @@ class PremiumSolanaFaucet {
                 { parse_mode: 'Markdown' }
             );
 
-            // Convert and send SOL
+            // Convert and send SOL  
             const lamportsToSend = Math.floor(claimAmount * LAMPORTS_PER_SOL);
             const txSignature = await this.sendSol(address, lamportsToSend);
 
-            // Update user state
+            // Update user state  
             await this.resetUserBalance(userId);
             await this.updateCooldown(userId);
 
@@ -683,7 +723,7 @@ class PremiumSolanaFaucet {
         }
     }
 
-    // ========== ADMIN FEATURES ==========
+    // ========== ADMIN FEATURES ==========  
 
     async sendAdminPanel(chatId, userId) {
         if (!this.isAdmin(userId)) {
@@ -750,16 +790,17 @@ class PremiumSolanaFaucet {
 
         try {
             const taskId = `task_${Date.now()}`;
+            // Use the first part of the description as the name, up to 30 chars
             const taskName = description.length > 30 ? description.substring(0, 30) + '...' : description;
 
-            const taskData = { 
+            const taskData = {
                 name: taskName,
                 link: link,
                 description: description,
                 reward: rewardAmount,
                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
                 createdBy: userId,
-                deleted: false // Ensure task is marked as not deleted
+                deleted: false // Ensure task is marked as not deleted  
             };
 
             await this.tasksCollection.doc(taskId).set(taskData);
@@ -818,7 +859,7 @@ class PremiumSolanaFaucet {
 
         try {
             await this.deleteTask(taskId);
-            
+
             await this.bot.sendMessage(chatId,
                 `✅ *Task Deleted Successfully!*\n\n` +
                 `🗑️ "${task.name}" has been removed from the task list.\n\n` +
@@ -868,17 +909,88 @@ class PremiumSolanaFaucet {
         await this.bot.sendMessage(chatId, statsMessage, { parse_mode: 'Markdown' });
     }
 
-    // ========== BOT INITIALIZATION ==========
+    async handleBroadcastMessage(msg) {
+        const chatId = msg.chat.id;
+        const userId = msg.from.id;
+
+        if (!this.isAdmin(userId)) return;
+
+        const text = msg.text.trim();
+        const messageParts = text.split(' ');
+        
+        if (messageParts.length < 2) {
+            await this.bot.sendMessage(chatId,
+                `📣 *Broadcast Message*\n\n` +
+                `Format: /broadcast <message>\n\n` +
+                `Example: /broadcast New tasks are available! Go check them out now. 🚀`,
+                { parse_mode: 'Markdown' }
+            );
+            return;
+        }
+
+        const broadcastMessage = messageParts.slice(1).join(' ');
+
+        try {
+            const usersSnapshot = await this.usersCollection.get();
+            let sentCount = 0;
+            let failedCount = 0;
+
+            const sendingMessage = await this.bot.sendMessage(chatId, 
+                `⏳ Initiating broadcast to all ${usersSnapshot.size} users...`
+            );
+
+            for (const doc of usersSnapshot.docs) {
+                const targetId = parseInt(doc.id, 10);
+                if (isNaN(targetId)) continue; // Skip if ID is not a valid number
+
+                try {
+                    await this.bot.sendMessage(targetId, 
+                        `📢 *ADMIN BROADCAST*\n\n` +
+                        broadcastMessage,
+                        { parse_mode: 'Markdown' }
+                    );
+                    sentCount++;
+                } catch (error) {
+                    // Log error but continue to next user (e.g., user blocked the bot)
+                    if (error.response && error.response.statusCode === 403) {
+                        console.log(`❌ Failed to send to user ${targetId}: Bot was blocked.`);
+                    } else {
+                        console.error(`❌ Error sending to user ${targetId}:`, error.message);
+                    }
+                    failedCount++;
+                }
+            }
+
+            const resultMessage = 
+                `✅ *Broadcast Complete!*\n\n` +
+                `📦 Total Users: ${usersSnapshot.size}\n` +
+                `🚀 Successfully Sent: ${sentCount}\n` +
+                `❌ Failed: ${failedCount}`;
+
+            await this.bot.editMessageText(resultMessage, { 
+                chat_id: chatId, 
+                message_id: sendingMessage.message_id, 
+                parse_mode: 'Markdown'
+            });
+
+        } catch (error) {
+            console.error('Error in broadcast:', error);
+            await this.bot.sendMessage(chatId, '❌ A critical error occurred during broadcast.');
+        }
+    }
+
+
+    // ========== BOT INITIALIZATION ==========  
 
     initializeBotHandlers() {
-        // Text message handler
+        // Text message handler  
         this.bot.on('message', async (msg) => {
             const chatId = msg.chat.id;
             const text = msg.text;
             const userId = msg.from.id;
             const username = msg.from.username || msg.from.first_name || `User_${userId}`;
 
-            await this.loadUserData(userId);
+            await this.loadUserData(userId, msg.from); // Pass msg.from to update name/username
 
             try {
                 if (text === '/start') {
@@ -889,6 +1001,9 @@ class PremiumSolanaFaucet {
                 }
                 else if (text.startsWith('/add_task') && this.isAdmin(userId)) {
                     await this.handleAddTask(msg);
+                }
+                else if (text.startsWith('/broadcast') && this.isAdmin(userId)) { // NEW
+                    await this.handleBroadcastMessage(msg);
                 }
                 else if (text === '/admin' && this.isAdmin(userId)) {
                     await this.sendAdminPanel(chatId, userId);
@@ -909,7 +1024,7 @@ class PremiumSolanaFaucet {
                         `/start - Welcome message\n` +
                         `/claim <address> - Claim SOL\n` +
                         `/help - This message` +
-                        (this.isAdmin(userId) ? `\n\n*Admin Commands:*\n/admin - Admin panel\n/add_task - Add new task\n/manage_tasks - Delete tasks` : ''),
+                        (this.isAdmin(userId) ? `\n\n*Admin Commands:*\n/admin - Admin panel\n/add_task - Add new task\n/broadcast - Send message to all users\n/manage_tasks - Delete tasks` : ''),
                         { parse_mode: 'Markdown' }
                     );
                 }
@@ -919,13 +1034,13 @@ class PremiumSolanaFaucet {
             }
         });
 
-        // Callback query handler
+        // Callback query handler  
         this.bot.on('callback_query', async (query) => {
             const chatId = query.message.chat.id;
             const userId = query.from.id;
             const data = query.data;
 
-            await this.loadUserData(userId);
+            await this.loadUserData(userId, query.from);
 
             try {
                 if (data === 'back_to_main') {
@@ -933,16 +1048,24 @@ class PremiumSolanaFaucet {
                     await this.sendWelcomeMessage(chatId, userId, username);
                 }
                 else if (data === 'view_tasks') await this.handleViewTasks(chatId, userId);
-                else if (data === 'claim_sol') await this.handleClaimRequest(chatId, userId, query.from.username);
+                else if (data === 'claim_sol') await this.handleClaimRequest(chatId, userId);
                 else if (data === 'my_profile') await this.sendUserProfile(chatId, userId);
                 else if (data === 'statistics') await this.sendStatistics(chatId, userId);
                 else if (data === 'admin_panel') await this.sendAdminPanel(chatId, userId);
                 else if (data === 'admin_stats') await this.handleAdminStats(chatId, userId);
                 else if (data === 'admin_manage_tasks') await this.handleManageTasks(chatId, userId);
                 else if (data === 'admin_add_task') {
-                    await this.bot.sendMessage(chatId, 
+                    await this.bot.sendMessage(chatId,
                         '📤 To add a task, use:\n\n/add_task <link> <description> <reward>\n\nExample:\n/add_task https://t.me/channel Join our Telegram 5'
                     );
+                }
+                else if (data === 'admin_broadcast') { // NEW
+                    await this.bot.sendMessage(chatId,
+                        '📣 To send a broadcast, use:\n\n/broadcast <Your message here>\n\nExample:\n/broadcast New tasks are available! Go check them out now. 🚀'
+                    );
+                }
+                else if (data === 'admin_users') { // Placeholder
+                    await this.bot.sendMessage(chatId, '🚧 User Management is under construction.');
                 }
                 else if (data.startsWith('admin_delete_task_')) {
                     const taskId = data.replace('admin_delete_task_', '');
@@ -954,7 +1077,7 @@ class PremiumSolanaFaucet {
                 }
                 else if (data.startsWith('verify_task_')) {
                     const taskId = data.replace('verify_task_', '');
-                    await this.handleVerifyTask(chatId, userId, taskId);
+                    await this.handleVerifyTask(chatId, userId, taskId, query.from); // Pass query.from for admin notification
                 }
                 else if (data === 'help') {
                     await this.bot.sendMessage(chatId,
@@ -974,6 +1097,7 @@ class PremiumSolanaFaucet {
             }
         });
     }
+
 }
 
 // ========== SERVER SETUP ==========
@@ -987,7 +1111,7 @@ app.post(`/bot${process.env.TELEGRAM_BOT_TOKEN}`, (req, res) => {
 });
 
 app.get('/', (req, res) => {
-    res.json({ 
+    res.json({
         status: 'Premium Solana Faucet Bot is running!',
         timestamp: new Date().toISOString()
     });
@@ -999,3 +1123,4 @@ app.listen(PORT, () => {
 });
 
 module.exports = db;
+
