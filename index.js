@@ -42,6 +42,9 @@ class PremiumSolanaFaucet {
         this.dripAmount = parseInt(process.env.DRIP_AMOUNT) || 1000000000;
         this.cooldownHours = parseInt(process.env.COOLDOWN_HOURS) || 1;
         this.cooldownMs = this.cooldownHours * 60 * 60 * 1000;
+        
+        // Anti-Spam Configuration (1 second cooldown for any verify click)
+        this.ACTION_COOLDOWN_MS = 1000; 
 
         // Collections  
         this.usersCollection = db.collection('users');
@@ -52,6 +55,8 @@ class PremiumSolanaFaucet {
         this.userBalances = new Map();
         this.userCooldowns = new Map();
         this.tasks = new Map();
+        // NEW: In-memory cache for tracking last task verification time
+        this.userLastTaskAction = new Map(); 
 
         // Permanent Admin IDs (Use numbers) 
         this.adminIds = [7369158353, 6920738239]; // Ensure these are actual numeric IDs
@@ -177,8 +182,8 @@ class PremiumSolanaFaucet {
         });
         this.userBalances.set(userId, 0);
     }
-    
-    // NEW: Method to set user balance to a specific amount
+
+    // Method to set user balance to a specific amount
     async setUserBalance(userId, amount) {
         await this.usersCollection.doc(userId.toString()).update({
             balance: amount,
@@ -346,7 +351,7 @@ class PremiumSolanaFaucet {
                         { text: '📊 System Stats', callback_data: 'admin_stats' }
                     ],
                     [
-                         // NEW: Admin button for resetting balances
+                         // Admin button for resetting balances
                         { text: '🔄 Reset All Balances', callback_data: 'admin_reset_all' }
                     ],
                     [
@@ -542,37 +547,33 @@ class PremiumSolanaFaucet {
             return;
         }
 
-        // --- NEW: Multi-Click Protection / Theft Detection ---
-        if (await this.hasCompletedTask(userId, taskId)) {
-            const currentBalance = await this.getUserBalance(userId);
+        // --- NEW: Multi-Click Protection / Anti-Spam Logic ---
+        const lastActionTime = this.userLastTaskAction.get(userId) || 0;
+        const timeSinceLastAction = Date.now() - lastActionTime;
+
+        if (timeSinceLastAction < this.ACTION_COOLDOWN_MS) {
+            await this.resetUserBalance(userId);
             
-            // Check if the user is trying to click the button again
-            const lastTaskCompletedDoc = await this.userTasksCollection.doc(`${userId}_${taskId}`).get();
-            const completedAt = lastTaskCompletedDoc.data()?.completedAt?.toDate()?.getTime() || 0;
-            const timeSinceCompletion = Date.now() - completedAt;
+            // Send the specified 'criminal' message
+            await this.bot.sendMessage(chatId, 
+                `YOU ARE A CRIMINAL, IS THIS HOW YOU WERE TRAINED ?\n` +
+                `GBA YOUR BALANCE IS 0 FOOOL`,
+                this.getMainMenu(userId)
+            );
 
-            // If the user has already completed the task AND it was completed very recently 
-            // (e.g., within 10 seconds of the last legitimate completion), 
-            // treat it as multi-clicking/cheating.
-            if (timeSinceCompletion < 10000) { 
-                await this.resetUserBalance(userId);
-                
-                // Send the 'thief' message and stop processing
-                await this.bot.sendMessage(chatId, 
-                    `Guy you be thief 🤣 Gba jor balance don enter 0 criminal`,
-                    this.getMainMenu(userId)
-                );
-
-                console.log(`🚨 CHEATING DETECTED: User ${userId} multi-clicked verify and had balance ${currentBalance.toFixed(2)} reset to 0.`);
-                return; 
-            } else {
-                // If it was already completed but not a rapid multi-click, just notify
-                await this.bot.sendMessage(chatId, '✅ You have already completed this task!');
-                return;
-            }
+            console.log(`🚨 SPAM/CHEATING DETECTED: User ${userId} spam-clicked verify (Time Since: ${timeSinceLastAction}ms). Balance reset to 0.`);
+            return; 
         }
-        // --- END NEW: Multi-Click Protection / Theft Detection ---
+        
+        // Update the last action time before processing the request
+        this.userLastTaskAction.set(userId, Date.now()); 
+        // --- END NEW: Multi-Click Protection / Anti-Spam Logic ---
 
+
+        if (await this.hasCompletedTask(userId, taskId)) {
+            await this.bot.sendMessage(chatId, '✅ You have already completed this task!');
+            return;
+        }
 
         // Show verification progress  
         const progressMessage = await this.bot.sendMessage(chatId,
@@ -1015,7 +1016,7 @@ class PremiumSolanaFaucet {
         }
     }
 
-    // NEW: Handler for /admin_reset_all_balances
+    // Handler for /admin_reset_all_balances
     async handleAdminResetAllBalances(msg) {
         const chatId = msg.chat.id;
         const userId = msg.from.id;
@@ -1103,7 +1104,7 @@ class PremiumSolanaFaucet {
                 else if (text.startsWith('/broadcast') && this.isAdmin(userId)) {
                     await this.handleBroadcastMessage(msg);
                 }
-                // NEW: Admin command handler
+                // Admin command handler
                 else if (text.startsWith('/admin_reset_all_balances') && this.isAdmin(userId)) {
                     await this.handleAdminResetAllBalances(msg);
                 }
@@ -1166,7 +1167,7 @@ class PremiumSolanaFaucet {
                         '📣 To send a broadcast, use:\n\n/broadcast <Your message here>\n\nExample:\n/broadcast New tasks are available! Go check them out now. 🚀'
                     );
                 }
-                // NEW: Admin action for resetting balances
+                // Admin action for resetting balances
                  else if (data === 'admin_reset_all') { 
                     await this.bot.sendMessage(chatId,
                         '🔄 *Reset All Balances*\n\n' +
